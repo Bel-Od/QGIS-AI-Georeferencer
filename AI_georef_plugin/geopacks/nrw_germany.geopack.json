@@ -1,0 +1,106 @@
+{
+  "schema_version": "1.0",
+  "id": "nrw_germany",
+  "name": "Germany / NRW",
+  "version": "1.0.0",
+  "description": "North Rhine-Westphalia, Germany. Full NRW government WMS support (DOP/DTK/ALKIS). Includes 43-city UTM32N lookup table and NRW OGC parcel API.",
+  "author": "TestDash Auto Georeferencer",
+  "crs_presets": {
+    "epsg_25832": {
+      "label": "EPSG:25832 — Germany/NRW (ETRS89 / UTM Zone 32N)",
+      "epsg": 25832,
+      "e_min": 280000.0,
+      "e_max": 920000.0,
+      "n_min": 5150000.0,
+      "n_max": 6100000.0,
+      "default": true,
+      "wms": {
+        "aerial": {
+          "url":    "https://www.wms.nrw.de/geobasis/wms_nw_dop",
+          "layer":  "nw_dop_rgb",
+          "format": "image/jpeg",
+          "label":  "NRW DOP (orthophoto)"
+        },
+        "topo": {
+          "url":    "https://www.wms.nrw.de/geobasis/wms_nw_dtk",
+          "layer":  "nw_dtk_col",
+          "format": "image/jpeg",
+          "label":  "NRW DTK (topographic)"
+        },
+        "vector": {
+          "url":         "https://www.wms.nrw.de/geobasis/wms_nw_alkis",
+          "layer":       "adv_alkis_flurstuecke,adv_alkis_verkehr,adv_alkis_gebaeude,adv_alkis_gewaesser",
+          "format":      "image/png",
+          "label":       "NRW ALKIS (cadastral/vector)",
+          "wms_version": "1.1.1",
+          "bgcolor":     "0xFFFFFF"
+        },
+        "vector_osm": {
+          "url":    "https://ows.terrestris.de/osm/service",
+          "layer":  "OSM-WMS",
+          "format": "image/jpeg",
+          "label":  "OSM terrestris (vector/CAD fallback)"
+        }
+      }
+    }
+  },
+  "city_lookup_epsg": 25832,
+  "city_lookup": {
+    "olpe":            {"e": 419476,  "n": 5653700},
+    "attendorn":       {"e": 427000,  "n": 5664000},
+    "siegen":          {"e": 432000,  "n": 5648000},
+    "lüdenscheid":     {"e": 401000,  "n": 5677500},
+    "hagen":           {"e": 390000,  "n": 5701000},
+    "dortmund":        {"e": 394000,  "n": 5706000},
+    "castrop-rauxel":  {"e": 374000,  "n": 5712000},
+    "castrop":         {"e": 374000,  "n": 5712000},
+    "recklinghausen":  {"e": 369000,  "n": 5714000},
+    "bochum":          {"e": 378000,  "n": 5706000},
+    "essen":           {"e": 362000,  "n": 5700000},
+    "gelsenkirchen":   {"e": 363000,  "n": 5708000},
+    "oberhausen":      {"e": 352000,  "n": 5702000},
+    "duisburg":        {"e": 344000,  "n": 5690000},
+    "mündelheim":      {"e": 339000,  "n": 5680000},
+    "krefeld":         {"e": 331000,  "n": 5676000},
+    "mönchengladbach": {"e": 332000,  "n": 5659000},
+    "neuss":           {"e": 342000,  "n": 5672000},
+    "köln":            {"e": 357000,  "n": 5645000},
+    "düsseldorf":      {"e": 341000,  "n": 5679000},
+    "wuppertal":       {"e": 370000,  "n": 5685000},
+    "remscheid":       {"e": 375000,  "n": 5680000},
+    "solingen":        {"e": 368000,  "n": 5679000},
+    "leverkusen":      {"e": 361000,  "n": 5652000},
+    "bonn":            {"e": 368000,  "n": 5627000},
+    "aachen":          {"e": 294000,  "n": 5630000},
+    "münster":         {"e": 401000,  "n": 5757000},
+    "bielefeld":       {"e": 469000,  "n": 5782000},
+    "paderborn":       {"e": 477000,  "n": 5752000},
+    "hamm":            {"e": 412000,  "n": 5718000},
+    "arnsberg":        {"e": 428000,  "n": 5695000},
+    "iserlohn":        {"e": 402000,  "n": 5694000},
+    "meschede":        {"e": 443000,  "n": 5674000},
+    "brilon":          {"e": 458000,  "n": 5686000},
+    "winterberg":      {"e": 447000,  "n": 5667000},
+    "schmallenberg":   {"e": 440000,  "n": 5662000},
+    "bad berleburg":   {"e": 459000,  "n": 5659000},
+    "frankfurt":       {"e": 477000,  "n": 5554000},
+    "münchen":         {"e": 692000,  "n": 5334000},
+    "berlin":          {"e": 798000,  "n": 5812000},
+    "hamburg":         {"e": 569000,  "n": 5934000},
+    "hannover":        {"e": 549000,  "n": 5806000},
+    "kall":            {"e": 327000,  "n": 5609000}
+  },
+  "parcel_apis": {
+    "nrw_ogc": {
+      "label":    "NRW OGC Parcel API (Liegenschaftskataster)",
+      "endpoint": "https://ogc-api.nrw.de/lika/v1/collections/flurstueck/items",
+      "bbox_crs_epsg": 25832,
+      "ref_regex": "(?:([A-Z\\u00c4\\u00d6\\u00dc][A-Za-z\\u00c4\\u00d6\\u00dc\\u00e4\\u00f6\\u00fc\\u00df\\- ]+)\\s*,\\s*)?Flur\\s*(\\d+)\\s*,?\\s*Flurst\\u00fcck\\s*([\\d/]+)",
+      "fields": {
+        "gemarkung": 1,
+        "flur":      2,
+        "flurstuck": 3
+      }
+    }
+  }
+}
