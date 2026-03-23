@@ -66,6 +66,8 @@ __all__ = [
     "AcceptanceDecision",
     "evaluate_quality",
     "confidence_label",
+    # pipeline
+    "run_pipeline",
     # ground-truth library
     "GeorefLibraryEntry",
     "find_library_match",
@@ -84,3 +86,9 @@ __all__ = [
     "new_source_id",
     "MAP_SOURCES_FILENAME",
 ]
+
+
+def run_pipeline(*args, **kwargs):
+    from .pipeline import run_pipeline as _run_pipeline
+
+    return _run_pipeline(*args, **kwargs)

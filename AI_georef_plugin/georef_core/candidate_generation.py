@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .location_hints import _address_is_specific, _extract_project_city
 from .models import CandidateEvidence, GeoCandidate, StructuredHints, VisionResult
 from .ranker import rerank_candidates
 from .runtime import load_auto_georeference
@@ -108,9 +109,8 @@ def build_candidates(
                 )
 
     project_address = ag.load_project_address() if include_project_address else None
-    _extract_project_city = getattr(ag, "_extract_project_city", None)
-    project_city = _extract_project_city(project_address) if (project_address and callable(_extract_project_city)) else None
-    project_address_specific = bool(project_address and ag._address_is_specific(project_address))
+    project_city = _extract_project_city(project_address) if project_address else None
+    project_address_specific = bool(project_address and _address_is_specific(project_address))
     # If Vision AI flagged the title block address as an office/firm address,
     # don't use its city as an expected plan location — the office may be in a
     # completely different city from the actual construction site.
@@ -178,7 +178,7 @@ def build_candidates(
         if project_address:
             gc = ag.geocode_address_to_utm32(project_address)
             if gc:
-                tier = "address" if ag._address_is_specific(project_address) else "city"
+                tier = "address" if _address_is_specific(project_address) else "city"
                 add_candidate(
                     "project-address",
                     "project_address",

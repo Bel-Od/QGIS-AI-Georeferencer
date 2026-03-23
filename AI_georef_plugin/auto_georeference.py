@@ -31,6 +31,22 @@ import threading
 import unicodedata
 from pathlib import Path
 
+from georef_core.location_hints import (
+    _address_is_specific as _location_address_is_specific,
+    _classify_address_confidence as _location_classify_address_confidence,
+    _extract_project_city as _location_extract_project_city,
+    _extract_road_codes as _location_extract_road_codes,
+    extract_structured_location_hints as _build_structured_location_hints,
+)
+from georef_core.text_parsing import (
+    _clean_text_for_match as _text_clean_text_for_match,
+    _extract_best_scale as _text_extract_best_scale,
+    _extract_scale_candidates as _text_extract_scale_candidates,
+    _merge_text_sources as _text_merge_text_sources,
+    _parse_scale_value as _text_parse_scale_value,
+    parse_coordinates as _text_parse_coordinates,
+)
+
 # ---------------------------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------------------------
@@ -875,6 +891,33 @@ def parse_coordinates(text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Delegated pure helpers
+# Keep the plugin API stable while routing reusable text parsing through
+# dedicated georef_core modules.
+def _clean_text_for_match(text: str) -> str:
+    return _text_clean_text_for_match(text)
+
+
+def _parse_scale_value(raw: str) -> int | None:
+    return _text_parse_scale_value(raw)
+
+
+def _extract_scale_candidates(text: str) -> list[tuple[int, float, str]]:
+    return _text_extract_scale_candidates(text)
+
+
+def _extract_best_scale(text: str) -> int | None:
+    return _text_extract_best_scale(text)
+
+
+def _merge_text_sources(primary: str, secondary: str) -> str:
+    return _text_merge_text_sources(primary, secondary)
+
+
+def parse_coordinates(text: str) -> dict:
+    return _text_parse_coordinates(text, logger=print)
+
+
 # STEP 4 – OpenAI Vision analysis
 # ---------------------------------------------------------------------------
 OVERVIEW_PROMPT = """
@@ -1405,6 +1448,32 @@ def _extract_structured_location_hints(
 
     LAST_STRUCTURED_LOCATION_HINTS = hints
     return hints
+
+
+def _extract_project_city(project_address: str) -> str | None:
+    return _location_extract_project_city(project_address)
+
+
+def _address_is_specific(address: str) -> bool:
+    return _location_address_is_specific(address)
+
+
+def _classify_address_confidence(address: str) -> str:
+    return _location_classify_address_confidence(address)
+
+
+def _extract_road_codes(text: str) -> list[str]:
+    return _location_extract_road_codes(text)
+
+
+def _extract_structured_location_hints(
+    text: str,
+    vision: dict | None = None,
+    titleblock_meta: dict | None = None,
+) -> dict:
+    global LAST_STRUCTURED_LOCATION_HINTS
+    LAST_STRUCTURED_LOCATION_HINTS = _build_structured_location_hints(text or "", vision, titleblock_meta)
+    return LAST_STRUCTURED_LOCATION_HINTS
 
 
 _GEOCODE_CACHE: dict = {}   # (address, limit) → list[dict]; reset each module load

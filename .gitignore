@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.venv/
+env/
+AI_georef_plugin.zip
+*.log
+AI_georef_plugin/georef_core/__pycache__/

@@ -1,8 +1,23 @@
 # AI Georeferencer for QGIS
 
-AI Georeferencer is a QGIS plugin for automatically georeferencing engineering plan TIFFs and PDFs. It combines OCR, OpenAI vision analysis, coordinate parsing, address-based seeding, and WMS/template matching to place a plan on the map, then lets you review and refine the result inside QGIS.
+AI Georeferencer is a QGIS plugin for georeferencing engineering plan TIFFs and PDFs. It combines OCR, OpenAI vision analysis, coordinate parsing, address-based seeding, and WMS or template matching to place a plan on the map, then lets you review and refine the result inside QGIS.
 
-The plugin is currently primarily built around German planning documents and currently ships with a built-in geopack for North Rhine-Westphalia (NRW), including EPSG:25832 and NRW WMS services, however the users can simply modify the geopacks to adapt to their location.
+The shipped configuration is centered on German planning documents and includes a built-in geopack for North Rhine-Westphalia (NRW), including EPSG:25832 and NRW WMS services. The geopack format is editable, so the plugin can be adapted to other regions.
+
+## Architecture Overview
+
+The plugin uses a hybrid pipeline: deterministic GIS logic handles coordinate parsing, candidate ranking, reprojection, and GeoTIFF output, while AI is used where plan interpretation is ambiguous or incomplete.
+
+High-level flow:
+
+1. Input ingest renders PDFs or reads TIFF metadata.
+2. Text extraction combines PDF text layers with OCR.
+3. Vision analysis infers plan type, scale, and title-block location hints.
+4. Candidate generation builds possible map anchors from coordinates, addresses, parcel references, and prior reviewed results.
+5. Matching and refinement compare candidates against configured map sources and write the best georeferenced raster.
+6. Review tools let users accept, reject, or manually adjust the result so later runs can reuse verified placements.
+
+For engineering notes, module boundaries, and design tradeoffs, see [`ENGINEERING.md`](ENGINEERING.md).
 
 ## What It Does
 
@@ -38,7 +53,7 @@ Notes:
 
 - GDAL and NumPy are expected to come from QGIS and should not be separately managed through the plugin.
 - The plugin currently uses the `gpt-4o` model for vision analysis.
-- The code is strongly Windows-oriented, but parts of it include Linux path fallbacks.
+- The code is primarily Windows-oriented, though some path handling includes Linux fallbacks.
 
 ## Installation
 
@@ -85,8 +100,8 @@ For best OCR results on German plans, install the German language data (`deu`).
 6. Click `Run`.
 7. Watch the live log and progress bar.
 8. Review the generated georeferenced TIFF in QGIS.
-9. Use the ajustment tools to refine the output.
-10. The tool stores the AI output and your refinement locally so it will prove to your specific needs the more you use and train it
+9. Use the adjustment tools to refine the output.
+10. The tool stores AI output and reviewed refinements locally so it can improve candidate ranking for similar plans over time.
 
 ### Input Types
 
@@ -122,13 +137,13 @@ Use the `Geopacks...` button to install additional `.geopack.json` files if you 
 
 ## Review And Adjustment
 
-After a run finishes, the plugin can keep improving its own placement quality through review:
+After a run finishes, the plugin can improve later candidate selection through review:
 
 - `Accept Result` marks the output as trusted and stores review metadata.
 - `Reject Result` records that the result was wrong.
 - `Adjust Placement` opens an interactive adjustment tool for translation, rotation, and typed corrections.
 
-Accepted and corrected results are written into the plugin's review/library data so later runs can benefit from prior verified placements.
+Accepted and corrected results are written into the plugin's review and library data so later runs can benefit from verified placements.
 
 ## Training And Ranking
 
@@ -162,7 +177,7 @@ Typical outputs include:
 - `candidate_ranker_model.json`
 - a `_work` folder with intermediate artifacts
 
-Only the final georeferenced TIFF is intended as the main deliverable. The JSON and log files support reuse, diagnostics, and training.
+Only the final georeferenced TIFF is intended as the main deliverable. The JSON and log files support diagnostics, reuse, and ranking or training workflows.
 
 ## Recommended Operating Procedure
 
@@ -184,8 +199,8 @@ Only the final georeferenced TIFF is intended as the main deliverable. The JSON 
 
 ## Repository Contents
 
-- [`auto_georef_plugin`]
-- [`auto_georef_plugin.zip`]
+- [`AI_georef_plugin`]
+- [`ENGINEERING.md`](ENGINEERING.md)
 - [`LICENSE`]
 
 ## Uninstall

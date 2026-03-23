@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from .location_hints import extract_structured_location_hints
 from .models import IngestResult, OCRResult, StructuredHints
+from .text_parsing import _merge_text_sources, parse_coordinates
 from .runtime import load_auto_georeference
 
 
@@ -9,8 +11,8 @@ def extract_text(ingest: IngestResult) -> OCRResult:
 
     if ingest.is_pdf:
         image_ocr_text = ag.ocr_extract_text(ingest.working_path)
-        merged = ag._merge_text_sources(ingest.pdf_text, image_ocr_text) if ingest.pdf_text.strip() else image_ocr_text
-        parsed = ag.parse_coordinates(merged) if merged else {
+        merged = _merge_text_sources(ingest.pdf_text, image_ocr_text) if ingest.pdf_text.strip() else image_ocr_text
+        parsed = parse_coordinates(merged) if merged else {
             "eastings": [],
             "northings": [],
             "pairs": [],
@@ -22,7 +24,7 @@ def extract_text(ingest: IngestResult) -> OCRResult:
         return OCRResult(text=merged, parsed=parsed, text_source="pdf+ocr" if ingest.pdf_text.strip() else "ocr")
 
     text = ag.ocr_extract_text(ingest.working_path)
-    parsed = ag.parse_coordinates(text) if text else {
+    parsed = parse_coordinates(text) if text else {
         "eastings": [],
         "northings": [],
         "pairs": [],
@@ -33,7 +35,5 @@ def extract_text(ingest: IngestResult) -> OCRResult:
 
 
 def extract_structured_hints(text: str, vision_overview: dict | None = None, title_block: dict | None = None) -> StructuredHints:
-    ag = load_auto_georeference()
-
-    hints = ag._extract_structured_location_hints(text or "", vision_overview or {}, title_block or {})
+    hints = extract_structured_location_hints(text or "", vision_overview or {}, title_block or {})
     return StructuredHints.from_dict(hints)
