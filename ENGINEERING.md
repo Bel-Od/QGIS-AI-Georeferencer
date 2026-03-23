@@ -2,6 +2,47 @@
 
 This document describes the current runtime structure of AI Georeferencer and the main tradeoffs behind it. It complements the user-facing setup and usage guidance in `README.md`.
 
+The diagram below uses the same high-level flow shown in the README, but expands the internal responsibilities that sit behind each stage.
+
+```mermaid
+flowchart TD
+    A[Input Plan<br/>TIFF or PDF] --> B[Ingest]
+    B --> C[Text Extraction<br/>PDF text + OCR]
+    B --> D[Vision Analysis<br/>title block, scale, plan type, location clues]
+
+    C --> E[Structured Hint Extraction]
+    D --> E
+
+    E --> F[Candidate Generation]
+    F --> F1[Coordinates]
+    F --> F2[Addresses / Geocoding]
+    F --> F3[Parcels / Road refs]
+    F --> F4[Prior reviewed cases]
+    F --> F5[Heuristic fallbacks]
+
+    F1 --> G[Validation and Ranking]
+    F2 --> G
+    F3 --> G
+    F4 --> G
+    F5 --> G
+
+    G --> H[Georeferencing Engine<br/>QGIS / GDAL transform]
+    H --> I[Georeferenced Output<br/>GeoTIFF]
+
+    I --> J[User Review]
+    J --> J1[Accept]
+    J --> J2[Reject]
+    J --> J3[Manual Adjustment]
+
+    J1 --> K[Persistence / Review Library]
+    J2 --> K
+    J3 --> K
+
+    K --> L[Future Reuse / Training]
+    L -. improves .-> F
+    L -. improves .-> G
+```
+
 ## System objective
 
 The plugin is designed to automate as much of the plan georeferencing workflow as is practical inside QGIS without removing operator control. The target input is engineering plans where coordinate evidence may be partial, noisy, rotated, or embedded in mixed sources such as scanned rasters, vector PDFs, title blocks, and reference-map context.

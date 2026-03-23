@@ -19,6 +19,30 @@ High-level flow:
 
 For engineering notes, module boundaries, and design tradeoffs, see [`ENGINEERING.md`](ENGINEERING.md).
 
+```mermaid
+flowchart LR
+    A[Plan Input<br/>TIFF / PDF] --> B[Ingest Layer]
+    B --> C[Extraction Layer]
+    C --> C1[PDF Text]
+    C --> C2[OCR]
+    C --> C3[Vision Context]
+
+    C1 --> D[Hint Normalization]
+    C2 --> D
+    C3 --> D
+
+    D --> E[Candidate Seed Generation]
+    E --> F[Validation + Ranking]
+    F --> G[Deterministic Georeferencing]
+    G --> H[GeoTIFF Output]
+
+    H --> I[Operator Review]
+    I --> J[Accepted / Rejected / Adjusted Cases]
+    J --> K[Persistence Layer]
+    K --> E
+    K --> F
+```
+
 ## What It Does
 
 - Reads TIFF and PDF plan files.
