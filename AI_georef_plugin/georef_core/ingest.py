@@ -12,9 +12,8 @@ def ingest_plan(context: PipelineContext) -> IngestResult:
     if context.is_pdf:
         metadata = ag.pdf_metadata(context.input_path)
         pdf_text = ag.extract_pdf_text(context.input_path) or ""
-        rendered_img = ag.render_pdf_to_image(context.input_path)
         rendered_tif = context.artifact_dir / f"{context.input_path.stem}_rendered.tif"
-        rendered_img.save(str(rendered_tif), format="TIFF", compression="lzw", dpi=(ag.PDF_RENDER_DPI, ag.PDF_RENDER_DPI))
+        ag.render_pdf_to_tiff_cached(context.input_path, dest_path=rendered_tif)
         return IngestResult(
             source_path=context.input_path,
             working_path=rendered_tif,

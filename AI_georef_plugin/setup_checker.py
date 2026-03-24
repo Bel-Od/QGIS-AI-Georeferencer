@@ -26,6 +26,14 @@ _IMPORT_TO_DIST: dict[str, str] = {
     "fitz": "pymupdf",
 }
 
+_OPENCV_PIP_SPEC = "opencv-python-headless>=4.10.0.84"
+_CONFLICTING_OPENCV_DISTS = [
+    "opencv-python",
+    "opencv-python-headless",
+    "opencv-contrib-python",
+    "opencv-contrib-python-headless",
+]
+
 
 def _python_exe() -> str:
     """
@@ -46,6 +54,61 @@ def _python_exe() -> str:
             return str(c)
     # Fallback: may be wrong inside QGIS but better than nothing
     return sys.executable
+
+
+def _site_roots() -> list[Path]:
+    roots: list[Path] = []
+    for raw in sys.path:
+        if not raw:
+            continue
+        try:
+            roots.append(Path(raw).resolve())
+        except Exception:
+            continue
+    return roots
+
+
+def _path_is_under(path: Path, roots: list[Path]) -> bool:
+    try:
+        path_r = path.resolve()
+    except Exception:
+        return False
+    for root in roots:
+        try:
+            path_r.relative_to(root)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _shadowing_site_packages(module_name: str) -> tuple[Path | None, str]:
+    spec = importlib.util.find_spec(module_name)
+    if spec is None:
+        return None, ""
+    origin = getattr(spec, "origin", None)
+    if not origin:
+        return None, ""
+    try:
+        origin_path = Path(origin).resolve()
+    except Exception:
+        return None, ""
+    user_root = Path.home().resolve()
+    qgis_root = Path(sys.exec_prefix).resolve()
+    if _path_is_under(origin_path, [user_root]) and not _path_is_under(origin_path, [qgis_root]):
+        return origin_path, str(origin_path)
+    return None, str(origin_path)
+
+
+def _run_subprocess(cmd: list[str], timeout: int = 180) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        output = (result.stdout + result.stderr).strip()
+        return result.returncode == 0, output
+    except subprocess.TimeoutExpired:
+        return False, f"Command timed out after {timeout} seconds: {' '.join(cmd)}"
+    except Exception as exc:
+        return False, str(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +167,20 @@ def _try_import(import_name: str, version_attr: str = "__version__") -> tuple[st
     return "ok", ver
 
 
+def _try_live_import(import_name: str, version_attr: str = "__version__") -> tuple[str, str, str]:
+    """Return (status, version, error_message) for an actual import attempt."""
+    try:
+        mod = importlib.import_module(import_name)
+        ver = getattr(mod, version_attr, "")
+        if not isinstance(ver, str):
+            ver = str(ver) if ver is not None else ""
+        return "ok", ver, ""
+    except ImportError as exc:
+        return "missing", "", str(exc)
+    except Exception as exc:
+        return "warning", "", str(exc)
+
+
 def _check_gdal() -> Requirement:
     status, ver = _try_import("osgeo.gdal", "__version__")
     if status == "ok":
@@ -133,6 +210,17 @@ def _check_pillow() -> Requirement:
 
 def _check_numpy() -> Requirement:
     status, ver = _try_import("numpy")
+    shadow_path, origin = _shadowing_site_packages("numpy")
+    if status == "ok" and shadow_path is not None:
+        return Requirement(
+            name="NumPy", key="numpy", status="warning", version=ver,
+            message=(
+                "NumPy is loading from a user/site-packages path instead of the QGIS runtime. "
+                f"Current module: {origin}. Remove pip-installed NumPy from the QGIS/user environment."
+            ),
+            install_cmd="",
+            required=True,
+        )
     return Requirement(
         name="NumPy", key="numpy", status=status, version=ver,
         message="Bundled with QGIS; do not manage via plugin pip installer." if status == "ok"
@@ -254,12 +342,20 @@ def _check_tesseract_binary() -> Requirement:
 
 
 def _check_opencv() -> Requirement:
-    status, ver = _try_import("cv2", "__version__")
+    status, ver, err = _try_live_import("cv2", "__version__")
+    if status == "ok":
+        msg = "Fast image matching available."
+    else:
+        msg = (
+            "Optional - install a QGIS/Python-compatible OpenCV build for faster image matching. "
+            "The plugin installer will remove conflicting OpenCV wheels before installing."
+        )
+        if err:
+            msg = f"{msg} Current import error: {err}"
     return Requirement(
         name="OpenCV (cv2)", key="opencv", status=status, version=ver,
-        message="Fast image matching (optional, ~10× speed boost)." if status == "ok"
-                else "Optional — install for faster connected-component analysis.",
-        install_cmd=f'"{_python_exe()}" -m pip install opencv-python-headless',
+        message=msg,
+        install_cmd=f'"{_python_exe()}" -m pip install {_OPENCV_PIP_SPEC}',
         required=False,
     )
 
@@ -366,7 +462,21 @@ def any_required_missing(reqs: list[Requirement]) -> bool:
 
 def pip_installable_missing(reqs: list[Requirement]) -> list[Requirement]:
     """Return missing requirements that can be fixed with pip (have install_cmd, no fix_url)."""
-    return [r for r in reqs if r.status == "missing" and r.install_cmd and not r.fix_url]
+    return [r for r in reqs if r.status in ("missing", "warning") and r.install_cmd and not r.fix_url]
+
+
+def _verify_opencv_install() -> tuple[bool, str]:
+    code = (
+        "import sys; "
+        "import numpy; "
+        "import cv2; "
+        "print('python=' + sys.version.split()[0]); "
+        "print('numpy=' + getattr(numpy, '__version__', '?')); "
+        "print('numpy_file=' + getattr(numpy, '__file__', '?')); "
+        "print('cv2=' + getattr(cv2, '__version__', '?')); "
+        "print('cv2_file=' + getattr(cv2, '__file__', '?'))"
+    )
+    return _run_subprocess([_python_exe(), "-c", code], timeout=60)
 
 
 def install_missing(reqs: list[Requirement]) -> tuple[bool, str]:
@@ -378,23 +488,63 @@ def install_missing(reqs: list[Requirement]) -> tuple[bool, str]:
     if not targets:
         return True, "Nothing to install via pip."
 
-    # Extract package specs from install commands
+    log_lines: list[str] = []
     packages: list[str] = []
+    need_opencv = False
     for r in targets:
-        # install_cmd is like: '"python.exe" -m pip install Pillow'
+        if r.key == "opencv":
+            need_opencv = True
+            continue
         after_pip_install = r.install_cmd.split("pip install", 1)[-1].strip()
-        # Strip any shell quoting that would confuse subprocess (e.g. "pkg>=1.0")
         packages.extend(tok.strip('"\'') for tok in after_pip_install.split())
 
-    cmd = [_python_exe(), "-m", "pip", "install"] + packages
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-        output = (result.stdout + result.stderr).strip()
-        return result.returncode == 0, output
-    except subprocess.TimeoutExpired:
-        return False, "pip install timed out after 3 minutes."
-    except Exception as exc:
-        return False, str(exc)
+    if packages:
+        cmd = [_python_exe(), "-m", "pip", "install"] + packages
+        ok, output = _run_subprocess(cmd, timeout=180)
+        log_lines.append("$ " + " ".join(cmd))
+        if output:
+            log_lines.append(output)
+        if not ok:
+            return False, "\n".join(log_lines)
+
+    if need_opencv:
+        uninstall_cmd = [_python_exe(), "-m", "pip", "uninstall", "-y"] + _CONFLICTING_OPENCV_DISTS
+        ok_uninstall, uninstall_output = _run_subprocess(uninstall_cmd, timeout=180)
+        log_lines.append("$ " + " ".join(uninstall_cmd))
+        if uninstall_output:
+            log_lines.append(uninstall_output)
+        if not ok_uninstall:
+            return False, "\n".join(log_lines)
+
+        install_cmd = [_python_exe(), "-m", "pip", "install", "--no-cache-dir", _OPENCV_PIP_SPEC]
+        ok_install, install_output = _run_subprocess(install_cmd, timeout=240)
+        log_lines.append("$ " + " ".join(install_cmd))
+        if install_output:
+            log_lines.append(install_output)
+        if not ok_install:
+            return False, "\n".join(log_lines)
+
+        ok_verify, verify_output = _verify_opencv_install()
+        log_lines.append("$ verify cv2 import against QGIS Python runtime")
+        if verify_output:
+            log_lines.append(verify_output)
+        if not ok_verify:
+            rollback_cmd = [_python_exe(), "-m", "pip", "uninstall", "-y", "opencv-python-headless"]
+            ok_rollback, rollback_output = _run_subprocess(rollback_cmd, timeout=180)
+            log_lines.append("$ " + " ".join(rollback_cmd))
+            if rollback_output:
+                log_lines.append(rollback_output)
+            if not ok_rollback:
+                log_lines.append("Rollback failed; remove OpenCV manually from the QGIS Python environment.")
+            log_lines.append(
+                "OpenCV installation failed verification and was removed. "
+                "The plugin can still run without OpenCV; restart QGIS and refresh Setup."
+            )
+            return False, "\n".join(log_lines)
+
+        log_lines.append("OpenCV installed and verified. Restart QGIS before running the plugin.")
+
+    return True, "\n".join(log_lines) if log_lines else "Nothing to install via pip."
 
 
 def save_api_key_to_env(key: str) -> tuple[bool, str]:

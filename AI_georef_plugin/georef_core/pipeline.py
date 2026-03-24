@@ -67,13 +67,28 @@ def run_pipeline(
 
     from .crs_config import get_active_epsg as _get_epsg
     epsg = vision.epsg or ingest.metadata.get("epsg_hint") or _get_epsg()
-    results_by_candidate: dict[str, object] = {}
-    for candidate in select_top_candidates(
+    shortlisted = select_top_candidates(
         candidates,
         limit=max_validation_candidates,
         hints=structured,
         vision=vision,
-    ):
+    )
+    dynamic_limit = len(shortlisted)
+    if shortlisted:
+        top = shortlisted[0]
+        second = shortlisted[1] if len(shortlisted) > 1 else None
+        top_model = float((top.metadata or {}).get("model_score", top.rank_score) or top.rank_score)
+        second_model = float((second.metadata or {}).get("model_score", second.rank_score) or second.rank_score) if second else float("-inf")
+        margin = top_model - second_model if second is not None else float("inf")
+        if top.source == "library":
+            dynamic_limit = 1
+        elif top.confidence_tier in ("address", "parcel", "coordinates") and margin >= 0.15:
+            dynamic_limit = 1
+        elif top.confidence_tier in ("street", "feature") and margin >= 0.20:
+            dynamic_limit = min(2, len(shortlisted))
+
+    results_by_candidate: dict[str, object] = {}
+    for candidate in shortlisted[:dynamic_limit]:
         validation, georef_result = validate_candidate(
             candidate,
             src_path=ingest.working_path,

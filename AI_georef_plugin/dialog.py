@@ -1002,7 +1002,7 @@ class GeorefDialog(QDialog):
         cursor.movePosition(QTextCursor.End)
         self._setup_log.setTextCursor(cursor)
         if ok:
-            self._setup_log.append("\n✔ Installation complete — refreshing status …")
+            self._setup_log.append("\n✔ Installation complete — restart QGIS, then refresh Setup status.")
         else:
             self._setup_log.append("\n✘ Installation failed — see output above.")
         self._refresh_setup_tab()

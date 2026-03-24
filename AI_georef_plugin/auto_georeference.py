@@ -23,6 +23,7 @@ import sys
 import re
 import json
 import base64
+import hashlib
 import tempfile
 import ssl
 import math
@@ -388,6 +389,106 @@ def _artifact_path(name: str) -> Path:
     return _artifact_dir() / name
 
 
+def _cache_dir(namespace: str | None = None) -> Path:
+    base = _artifact_dir() / "cache"
+    base.mkdir(parents=True, exist_ok=True)
+    if namespace:
+        base = base / namespace
+        base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _cache_key(*parts) -> str:
+    payload = json.dumps(parts, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def _path_fingerprint(path: Path) -> dict:
+    try:
+        stat = Path(path).stat()
+        return {
+            "path": str(Path(path).resolve()),
+            "size": int(stat.st_size),
+            "mtime_ns": int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))),
+        }
+    except Exception:
+        return {"path": str(path), "size": -1, "mtime_ns": -1}
+
+
+def _cache_text_path(namespace: str, key: str, suffix: str = ".txt") -> Path:
+    return _cache_dir(namespace) / f"{key}{suffix}"
+
+
+def _cache_read_text(namespace: str, key: str, suffix: str = ".txt") -> str | None:
+    target = _cache_text_path(namespace, key, suffix)
+    try:
+        if target.exists():
+            return target.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    return None
+
+
+def _cache_write_text(namespace: str, key: str, text: str, suffix: str = ".txt") -> Path | None:
+    target = _cache_text_path(namespace, key, suffix)
+    try:
+        target.write_text(text, encoding="utf-8")
+        return target
+    except Exception:
+        return None
+
+
+def _cache_read_json(namespace: str, key: str) -> object | None:
+    raw = _cache_read_text(namespace, key, suffix=".json")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def _cache_write_json(namespace: str, key: str, payload: object) -> Path | None:
+    return _cache_write_text(
+        namespace,
+        key,
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        suffix=".json",
+    )
+
+
+def _cache_binary_path(namespace: str, key: str, suffix: str) -> Path:
+    return _cache_dir(namespace) / f"{key}{suffix}"
+
+
+def _fetch_url_bytes_cached(
+    url: str,
+    *,
+    namespace: str,
+    timeout: int,
+    headers: dict | None = None,
+    context=None,
+    suffix: str = ".bin",
+) -> tuple[bytes, bool]:
+    cache_key = _cache_key("url-bytes", namespace, url)
+    cache_path = _cache_binary_path(namespace, cache_key, suffix)
+    try:
+        if cache_path.exists():
+            return cache_path.read_bytes(), True
+    except Exception:
+        pass
+    import urllib.request
+
+    req = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
+        data = resp.read()
+    try:
+        cache_path.write_bytes(data)
+    except Exception:
+        pass
+    return data, False
+
+
 def _clean_text_for_match(text: str) -> str:
     return (text or "").replace("ä", "a").replace("ö", "o").replace("ü", "u").replace("ß", "ss")
 
@@ -594,14 +695,31 @@ except ImportError:
     HAS_OPENAI = False
     print("[✗] openai not found  →  pip install openai")
 
-try:
-    import cv2
-    HAS_CV2 = True
-    print("[✓] OpenCV available")
-except Exception:
+def _disable_cv2(reason, exc=None):
+    global cv2, HAS_CV2
     cv2 = None
     HAS_CV2 = False
-    print("[i] OpenCV not available – advanced affine refinement disabled")
+    if exc is not None:
+        print(f"[i] OpenCV disabled - {reason}: {exc}")
+    else:
+        print(f"[i] OpenCV disabled - {reason}")
+
+
+try:
+    import cv2 as _cv2
+    try:
+        import numpy as _np
+        # Smoke-test the extension against the active NumPy ABI before enabling
+        # any optional cv2-based refinement paths.
+        _ = _cv2.__version__
+        _ = _cv2.cvtColor(_np.zeros((1, 1, 3), dtype=_np.uint8), _cv2.COLOR_RGB2GRAY)
+        cv2 = _cv2
+        HAS_CV2 = True
+        print("[✓] OpenCV available")
+    except Exception as _cv2_probe_exc:
+        _disable_cv2("incompatible with the current QGIS/NumPy runtime; advanced affine refinement disabled", _cv2_probe_exc)
+except Exception as _cv2_import_exc:
+    _disable_cv2("not available; advanced affine refinement disabled", _cv2_import_exc)
 
 try:
     from pyproj import Transformer
@@ -674,6 +792,30 @@ def render_pdf_to_image(pdf_path: Path, page_index: int = 0) -> "Image.Image":
     return img
 
 
+def render_pdf_to_tiff_cached(pdf_path: Path, page_index: int = 0, dest_path: Path | None = None) -> Path:
+    cache_key = _cache_key("pdf-render", _path_fingerprint(pdf_path), page_index, PDF_RENDER_DPI)
+    cache_path = _cache_binary_path("pdf_render", cache_key, ".tif")
+    if not cache_path.exists():
+        rendered = render_pdf_to_image(pdf_path, page_index=page_index)
+        try:
+            rendered.save(
+                str(cache_path),
+                format="TIFF",
+                compression="lzw",
+                dpi=(PDF_RENDER_DPI, PDF_RENDER_DPI),
+            )
+        finally:
+            rendered.close()
+    if dest_path is not None:
+        try:
+            if dest_path.resolve() != cache_path.resolve():
+                dest_path.write_bytes(cache_path.read_bytes())
+                return dest_path
+        except Exception:
+            pass
+    return cache_path
+
+
 def extract_pdf_text(pdf_path: Path, page_index: int = 0) -> str:
     """
     Extract the machine-readable text layer from a PDF page.
@@ -681,14 +823,19 @@ def extract_pdf_text(pdf_path: Path, page_index: int = 0) -> str:
     """
     if not HAS_FITZ:
         return ""
+    cache_key = _cache_key("pdf-text", _path_fingerprint(pdf_path), page_index)
+    cached = _cache_read_text("pdf_text", cache_key)
+    if cached is not None:
+        return cached
     try:
         doc = pymupdf.open(str(pdf_path))
         try:
             if page_index >= len(doc):
                 return ""
             page = doc.load_page(page_index)
-            text = page.get_text("text")
-            return text or ""
+            text = page.get_text("text") or ""
+            _cache_write_text("pdf_text", cache_key, text)
+            return text
         finally:
             doc.close()
     except Exception as exc:
@@ -794,23 +941,83 @@ def pdf_metadata(pdf_path: Path, page_index: int = 0) -> dict:
 # ---------------------------------------------------------------------------
 # STEP 2 – OCR: extract all text from the image
 # ---------------------------------------------------------------------------
-def ocr_extract_text(path: Path, dpi: int = 200) -> str:
-    """Return full OCR text from the TIFF (uses Tesseract with German+English)."""
-    if not (HAS_TESSERACT and HAS_PIL):
-        print("[!] Skipping OCR (missing dependencies)")
+def _ocr_text_is_sufficient(text: str) -> bool:
+    text = (text or "").strip()
+    if not text:
+        return False
+    parsed = parse_coordinates(text)
+    if parsed.get("pairs") or parsed.get("eastings") or parsed.get("northings"):
+        return True
+    hints = _extract_structured_location_hints(text)
+    evidence_count = 0
+    for key in ("site_city", "site_street", "road_code", "station_text", "landmark_name"):
+        if hints.get(key):
+            evidence_count += 1
+    if hints.get("parcel_refs"):
+        evidence_count += 1
+    if parsed.get("scale"):
+        evidence_count += 1
+    return evidence_count >= 2 or len(text) >= 700
+
+
+def _ocr_image_text(img: "Image.Image", config: str) -> str:
+    try:
+        return pytesseract.image_to_string(img, config=config) or ""
+    except Exception:
         return ""
 
+
+def _ocr_extract_targeted_text(path: Path) -> str:
+    cache_key = _cache_key("ocr-targeted", _path_fingerprint(path), getattr(pytesseract.pytesseract, "tesseract_cmd", ""))
+    cached = _cache_read_text("ocr_targeted", cache_key)
+    if cached is not None:
+        return cached
+
+    _img_raw = Image.open(str(path))
+    texts: list[str] = []
+    try:
+        img = _img_raw.convert("RGB") if _img_raw.mode not in ("RGB", "L") else _img_raw
+        W, H = img.width, img.height
+        boxes = [
+            ("top", (0, 0, W, max(1, int(H * 0.18))), False),
+            ("bottom", (0, max(0, int(H * 0.76)), W, H), False),
+            ("left", (0, 0, max(1, int(W * 0.18)), H), True),
+            ("right", (max(0, int(W * 0.82)), 0, W, H), True),
+            ("title", (max(0, int(W * 0.52)), max(0, int(H * 0.58)), W, H), False),
+        ]
+        for name, box, rotate in boxes:
+            crop = img.crop(box)
+            try:
+                if rotate:
+                    crop = crop.rotate(90, expand=True)
+                if max(crop.width, crop.height) > 3200:
+                    scale = 3200 / max(crop.width, crop.height)
+                    crop = crop.resize((max(1, int(crop.width * scale)), max(1, int(crop.height * scale))), Image.LANCZOS)
+                txt = _ocr_image_text(crop, r"--oem 3 --psm 6 -l deu+eng").strip()
+                if txt:
+                    texts.append(txt)
+            finally:
+                crop.close()
+    finally:
+        img.close()
+    merged = _merge_text_sources("\n".join(texts), "")
+    _cache_write_text("ocr_targeted", cache_key, merged)
+    return merged
+
+
+def _ocr_extract_full_text(path: Path) -> str:
+    cache_key = _cache_key("ocr-full", _path_fingerprint(path), getattr(pytesseract.pytesseract, "tesseract_cmd", ""))
+    cached = _cache_read_text("ocr_full", cache_key)
+    if cached is not None:
+        return cached
     print("[~] Running OCR on full image (may take a minute for 132 MB) …")
     _img_raw = Image.open(str(path))
     try:
-        # Convert to RGB if needed
         if _img_raw.mode not in ("RGB", "L"):
             img = _img_raw.convert("RGB")
             _img_raw.close()
         else:
             img = _img_raw
-
-        # For very large images, downsample before OCR to stay reasonable
         max_side = 8000
         if max(img.width, img.height) > max_side:
             scale = max_side / max(img.width, img.height)
@@ -819,13 +1026,36 @@ def ocr_extract_text(path: Path, dpi: int = 200) -> str:
                 img.close()
             img = _resized
             print(f"[i] Downsampled to {img.width}×{img.height} for OCR")
-
-        cfg = r"--oem 3 --psm 11 -l deu+eng"
-        text = pytesseract.image_to_string(img, config=cfg)
+        text = _ocr_image_text(img, r"--oem 3 --psm 11 -l deu+eng")
     finally:
         img.close()
-    print(f"[✓] OCR extracted {len(text)} characters")
+    _cache_write_text("ocr_full", cache_key, text)
     return text
+
+
+def ocr_extract_text(path: Path, dpi: int = 200) -> str:
+    """Return OCR text from the TIFF, preferring targeted regions before full-image OCR."""
+    if not (HAS_TESSERACT and HAS_PIL):
+        print("[!] Skipping OCR (missing dependencies)")
+        return ""
+    cache_key = _cache_key("ocr-final", _path_fingerprint(path), dpi, getattr(pytesseract.pytesseract, "tesseract_cmd", ""))
+    cached = _cache_read_text("ocr_final", cache_key)
+    if cached is not None:
+        print(f"[i] OCR cache hit → {len(cached)} characters")
+        return cached
+
+    print("[~] Running targeted OCR on margins/title block …")
+    targeted = _ocr_extract_targeted_text(path)
+    if _ocr_text_is_sufficient(targeted):
+        print(f"[✓] Targeted OCR extracted {len(targeted)} characters")
+        _cache_write_text("ocr_final", cache_key, targeted)
+        return targeted
+
+    full_text = _ocr_extract_full_text(path)
+    merged = _merge_text_sources(targeted, full_text)
+    print(f"[✓] OCR extracted {len(merged)} characters")
+    _cache_write_text("ocr_final", cache_key, merged)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -1494,6 +1724,11 @@ def geocode_address_candidates_utm32(address: str, limit: int = 5) -> list[dict]
     cache_key = (address, int(limit), int(TARGET_EPSG))
     if cache_key in _GEOCODE_CACHE:
         return list(_GEOCODE_CACHE[cache_key] or [])
+    _disk_key = _cache_key("geocode", address, int(limit), int(TARGET_EPSG))
+    _disk_cached = _cache_read_json("geocode", _disk_key)
+    if isinstance(_disk_cached, list):
+        _GEOCODE_CACHE[cache_key] = list(_disk_cached)
+        return list(_disk_cached)
 
     import time
     import urllib.request
@@ -1550,6 +1785,7 @@ def geocode_address_candidates_utm32(address: str, limit: int = 5) -> list[dict]
     else:
         print(f"[!] Geocoding: no usable results for '{address}'")
     _GEOCODE_CACHE[cache_key] = list(results)
+    _cache_write_json("geocode", _disk_key, results)
     return results
 
 
@@ -1644,6 +1880,10 @@ def _utm32n_to_wgs84(easting: float, northing: float) -> tuple[float, float] | N
 
 
 def _overpass_query(query: str) -> dict | None:
+    cache_key = _cache_key("overpass", query)
+    cached = _cache_read_json("overpass", cache_key)
+    if isinstance(cached, dict):
+        return cached
     import urllib.request
     import urllib.parse
     data = urllib.parse.urlencode({"data": query}).encode("utf-8")
@@ -1654,7 +1894,9 @@ def _overpass_query(query: str) -> dict | None:
     )
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            payload = json.loads(resp.read().decode("utf-8"))
+            _cache_write_json("overpass", cache_key, payload)
+            return payload
     except Exception as exc:
         print(f"[~] Overpass lookup failed: {exc}")
         return None
@@ -1920,13 +2162,19 @@ def _lookup_nrw_parcel_centroid(
     import urllib.parse
     import urllib.request
     url = "https://ogc-api.nrw.de/lika/v1/collections/flurstueck/items?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={"User-Agent": "AutoGeoreferencer/1.0 (QGIS plugin; georef tool)"})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:
-        print(f"[~] NRW parcel lookup failed: {exc}")
-        return None
+    cache_key = _cache_key("nrw-parcel", url)
+    cached = _cache_read_json("nrw_parcel", cache_key)
+    if isinstance(cached, dict):
+        payload = cached
+    else:
+        req = urllib.request.Request(url, headers={"User-Agent": "AutoGeoreferencer/1.0 (QGIS plugin; georef tool)"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            _cache_write_json("nrw_parcel", cache_key, payload)
+        except Exception as exc:
+            print(f"[~] NRW parcel lookup failed: {exc}")
+            return None
     feats = payload.get("features") if isinstance(payload, dict) else None
     if not isinstance(feats, list):
         return None
@@ -3512,6 +3760,28 @@ def openai_vision_analysis(path: Path, meta: dict,
         return {}
 
     global LAST_VISION_RESULT
+    _canvas_sig = None
+    if canvas_img is not None:
+        try:
+            _canvas_sig = {
+                "size": tuple(canvas_img.size),
+                "hist": tuple(int(v) for v in canvas_img.convert("L").histogram()[::32][:8]),
+            }
+        except Exception:
+            _canvas_sig = "present"
+    cache_key = _cache_key(
+        "vision",
+        _path_fingerprint(path),
+        meta or {},
+        OPENAI_MODEL,
+        _canvas_sig,
+        hashlib.sha256((ocr_text or "").encode("utf-8")).hexdigest()[:16],
+    )
+    cached = _cache_read_json("vision", cache_key)
+    if isinstance(cached, dict):
+        LAST_VISION_RESULT = dict(cached)
+        print("[i] Vision cache hit")
+        return dict(cached)
     client = OpenAI(api_key=OPENAI_API_KEY)
 
     # ------------------------------------------------------------------
@@ -3921,6 +4191,7 @@ def openai_vision_analysis(path: Path, meta: dict,
     if titleblock_meta:
         result["title_block"] = titleblock_meta
     LAST_VISION_RESULT = dict(result)
+    _cache_write_json("vision", cache_key, result)
     return result
 
 
@@ -4451,9 +4722,13 @@ def refine_geotransform_wms(src_path: Path, gt: tuple, epsg: int) -> tuple:
 
     print(f"[~] WMS refinement: downloading reference tile …")
     try:
-        req = urllib.request.Request(wms_req, headers={"User-Agent": "auto_georeference/1.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = resp.read()
+        data, _ = _fetch_url_bytes_cached(
+            wms_req,
+            namespace="wms_tiles",
+            timeout=15,
+            headers={"User-Agent": "auto_georeference/1.0"},
+            suffix=".img",
+        )
         ref_img = Image.open(io.BytesIO(data)).convert("L")
         ref_arr = np.array(ref_img, dtype=np.float32)
     except Exception as exc:
@@ -5988,9 +6263,14 @@ def refine_geotransform_wms_v2(src_path: Path, gt: tuple, epsg: int, *,
                 f"&BBOX={tile_bbox}&WIDTH={ref_px}&HEIGHT={ref_px}"
                 f"&FORMAT={WMS_FORMAT}&TRANSPARENT=FALSE{_bgcolor_param}"
             )
-        req = urllib.request.Request(tile_req, headers={"User-Agent": "auto_georeference/1.0"})
-        with urllib.request.urlopen(req, timeout=tile_timeout_s, context=ssl_ctx) as resp:
-            tile_data = resp.read()
+        tile_data, _ = _fetch_url_bytes_cached(
+            tile_req,
+            namespace="wms_tiles",
+            timeout=tile_timeout_s,
+            headers={"User-Agent": "auto_georeference/1.0"},
+            context=ssl_ctx,
+            suffix=".img",
+        )
         try:
             _tile_img_raw = Image.open(io.BytesIO(tile_data)).convert("L")
         except Exception:
@@ -6252,6 +6532,26 @@ def refine_geotransform_wms_v2(src_path: Path, gt: tuple, epsg: int, *,
                     f"ΔE={cand['shift_e']:+.0f}  ΔN={cand['shift_n']:+.0f}  total={cand['total_m']:.0f} m"
                 )
 
+        _seed_precise = has_coord_anchors or seed_confidence in ("address", "street", "feature", "manual_seed", "last_result")
+        _can_skip_fine = (
+            best_local is not None
+            and _seed_precise
+            and best_local.get("score", 0.0) >= 0.42
+            and best_local.get("confidence", 0.0) >= 1.12
+            and best_local.get("score_gap", 0.0) >= 0.05
+            and best_local.get("total_m", WMS_MAX_SHIFT_M + 1.0) <= min(WMS_MAX_SHIFT_M, 800.0)
+            and (
+                len(coarse_top_local) < 2
+                or best_local.get("score", 0.0) - coarse_top_local[1].get("score", 0.0) >= 0.03
+            )
+        )
+        if _can_skip_fine:
+            print(
+                f"[i] Coarse WMS match already decisive{pass_label} -- skipping fine tile search "
+                f"(score={best_local['score']:.3f} gap={best_local['score_gap']:.3f} conf={best_local['confidence']:.2f}x)"
+            )
+            return best_local, successful_local, coarse_top_local, final_candidates_local, _saved_wms_local, _effective_plan_type_local
+
         if _CANCEL_FLAG.is_set():
             print("[!] WMS refinement cancelled by user -- skipping refinement")
             return best_local, successful_local, coarse_top_local, final_candidates_local, _saved_wms_local, _effective_plan_type_local
@@ -6511,9 +6811,14 @@ def refine_geotransform_wms_v2(src_path: Path, gt: tuple, epsg: int, *,
                         f"&LAYERS={WMS_LAYER}&STYLES={_styles}&CRS=EPSG:{epsg}"
                         f"&BBOX={_bbox}&WIDTH={patch_px}&HEIGHT={patch_px}"
                         f"&FORMAT={WMS_FORMAT}&TRANSPARENT=FALSE")
-            _req = urllib.request.Request(_url, headers={"User-Agent": "auto_georeference/1.0"})
-            with urllib.request.urlopen(_req, timeout=WMS_TILE_TIMEOUT, context=ssl_ctx) as resp:
-                _wms_data = resp.read()
+            _wms_data, _ = _fetch_url_bytes_cached(
+                _url,
+                namespace="wms_tiles",
+                timeout=WMS_TILE_TIMEOUT,
+                headers={"User-Agent": "auto_georeference/1.0"},
+                context=ssl_ctx,
+                suffix=".img",
+            )
             _ref_tile = Image.open(io.BytesIO(_wms_data)).convert("L")
             ref_u8 = np.array(_ref_tile, dtype=np.uint8)
             _ref_tile.close()
@@ -6620,7 +6925,13 @@ def refine_geotransform_wms_v2(src_path: Path, gt: tuple, epsg: int, *,
         try:
             print("[~] Patch-consensus refinement: evaluating top reference candidates …")
             patch_best = None
-            patch_limit = min(6, len(final_candidates))
+            _patch_limit_base = 6
+            if len(final_candidates) >= 2 and (
+                final_candidates[0].get("score", 0.0) - final_candidates[1].get("score", 0.0) >= 0.05
+                and final_candidates[0].get("confidence", 0.0) >= 1.10
+            ):
+                _patch_limit_base = 3
+            patch_limit = min(_patch_limit_base, len(final_candidates))
             # Use the pre-road-band full plan image: larger spatial extent gives
             # a 3×3 patch grid instead of 4×1, greatly improving the chance of
             # finding 3 spatially distinct matching patches.
@@ -6826,7 +7137,13 @@ def refine_geotransform_wms_v2(src_path: Path, gt: tuple, epsg: int, *,
                 print("[i] Feature refinement using full-height plan image")
             print("[~] Feature refinement: evaluating top reference candidates …")
             feature_best = None
-            feature_limit = min(6, len(final_candidates))
+            _feature_limit_base = 6
+            if len(final_candidates) >= 2 and (
+                final_candidates[0].get("score", 0.0) - final_candidates[1].get("score", 0.0) >= 0.05
+                and final_candidates[0].get("confidence", 0.0) >= 1.10
+            ):
+                _feature_limit_base = 3
+            feature_limit = min(_feature_limit_base, len(final_candidates))
             # Scale the residual limit to the reference tile pixel size.
             # At coarse resolution (~8 m/px) a 2-pixel residual is already ~16 m,
             # so a hard 6 m absolute limit would reject all valid matches.
@@ -8286,12 +8603,13 @@ def run_georef(input_path: Path | None = None, input_is_pdf: bool | None = None)
             print("[✗] pymupdf not installed – cannot render PDF.  Run: pip install pymupdf")
             return
         print(f"[~] Rendering PDF at {PDF_RENDER_DPI} DPI …")
-        rendered_img = render_pdf_to_image(active_input_path)
         rendered_tif = _artifact_path(active_input_path.stem + "_rendered.tif")
-        rendered_img.save(str(rendered_tif), format="TIFF", compression="lzw",
-                          dpi=(PDF_RENDER_DPI, PDF_RENDER_DPI))
-        print(f"[✓] PDF rendered → {rendered_tif}  ({rendered_img.width}×{rendered_img.height} px)")
-        rendered_img.close()
+        cached_render = render_pdf_to_tiff_cached(active_input_path, dest_path=rendered_tif)
+        try:
+            with Image.open(str(cached_render)) as _rendered_img:
+                print(f"[✓] PDF rendered → {rendered_tif}  ({_rendered_img.width}×{_rendered_img.height} px)")
+        except Exception:
+            print(f"[✓] PDF rendered → {rendered_tif}")
         work_path = rendered_tif
 
         # 1. Metadata from PDF (no GDAL needed for the rendered TIFF yet)
